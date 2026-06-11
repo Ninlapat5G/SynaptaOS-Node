@@ -143,6 +143,9 @@ void SynaptaNodeClass::_init() {
     esp_mqtt_client_config_t cfg = {};
     cfg.broker.address.uri              = s_uri.c_str();
     cfg.session.protocol_ver            = MQTT_PROTOCOL_V_5;
+    // default 120 วิ = broker กว่าจะรู้ว่า node ตาย (LWT ยิง offline) ช้าสุด ~3 นาที
+    // 15 วิ → รู้ภายใน ~25 วิ — กฎแจ้งเตือน "อุปกรณ์หลุด" จะเด้งเร็วขึ้นมาก
+    cfg.session.keepalive               = 15;
     cfg.credentials.client_id           = s_clientId.c_str();
     cfg.session.last_will.topic         = s_statusTopic.c_str();
     cfg.session.last_will.msg           = "offline";
