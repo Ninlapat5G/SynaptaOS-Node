@@ -41,6 +41,7 @@ public:
     // Internal — called by SynaptaDevice
     bool _publish(const char* topic, const char* payload,
                   bool retain = true, int qos = 1, uint32_t expirySeconds = 0);
+    void _publishManifest();   // device เรียกหลังรับ config — ให้ manifest ใน broker สดเสมอ
 
     const NodeConfig& config() const { return _cfg; }
 
@@ -59,7 +60,6 @@ private:
     TaskHandle_t               _loopTask = nullptr;
 
     void _init();
-    void _publishManifest();
     std::string _nodeId()        const;
     std::string _statusTopic()   const;
     std::string _manifestTopic() const;

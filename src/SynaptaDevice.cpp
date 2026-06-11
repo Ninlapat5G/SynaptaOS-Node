@@ -65,7 +65,9 @@ void SynaptaDevice::attachPin(uint8_t pin) {
 void SynaptaDevice::attachPWM(uint8_t pin) {
     _pin = pin;
     static uint8_t nextChannel = 0;
-    _pwmChannel = (int8_t)(nextChannel++ & 0x07);
+    // จองช่อง PWM ครั้งแรกครั้งเดียว — เปลี่ยน pin ซ้ำใช้ช่องเดิม (ESP32 มีแค่ 8 ช่อง
+    // ถ้าจองใหม่ทุกครั้งจะวนกลับไปทับช่องของอุปกรณ์ตัวอื่น)
+    if (_pwmChannel < 0) _pwmChannel = (int8_t)(nextChannel++ & 0x07);
 
     ledc_timer_config_t timer = {};
     timer.speed_mode      = LEDC_LOW_SPEED_MODE;
@@ -227,11 +229,20 @@ void SynaptaDevice::_handleConfig(const char* payload, const char* response_topi
         printf("[Synapta] Config saved: %s → pin %d (%s)\n",
                _topic.c_str(), (int)pin, isPwm ? "pwm" : "digital");
 
+        // ปลดขาเก่าก่อนย้าย — ไม่งั้นขาเก่าค้างสถานะล่าสุด (เช่นไฟติดค้าง)
+        // gpio_reset_pin ตัดทั้ง output และสาย PWM ใน GPIO matrix
+        if (_pin != NO_PIN && _pin != (uint8_t)pin) {
+            gpio_reset_pin((gpio_num_t)_pin);
+        }
+
         if (isPwm) attachPWM((uint8_t)pin);
         else       attachPin((uint8_t)pin);
 
         _configured = true;
         _nvPin      = pin;
+
+        // manifest ใน broker เป็น retained — ถ้าไม่ส่งซ้ำ จะค้าง configured:false จนกว่า reconnect
+        Synapta._publishManifest();
     } else {
         printf("[Synapta] Config unchanged for %s — skip NVS write\n", _topic.c_str());
     }
