@@ -49,8 +49,17 @@ Pin ตั้งจาก Web App (Edit device → Pin → Save) ส่งผ่
 ```
 CONFIG_MQTT_PROTOCOL_5=y
 CONFIG_MQTT_TRANSPORT_SSL=y
+CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES=y
 ```
 ⚠️ ถ้าลืม `CONFIG_MQTT_PROTOCOL_5=y` โค้ดที่อยู่ใน `#ifdef CONFIG_MQTT_PROTOCOL_5` (อ่าน responseTopic, ตั้ง message expiry) จะถูกตัดทิ้งเงียบ ๆ → manifest ไม่หมดอายุ + config ACK ไม่ทำงาน
+
+## Broker แบบชื่อ (mDNS) — รองรับ DHCP
+
+ตั้ง broker เป็นชื่อ `.local` แทน IP: `Synapta.broker("synapta-hub.local", 1883, false)`
+- lwip resolve ให้เองตอนเชื่อมต่อ (ต้องมี `CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES=y`) — DHCP แจกเลขใหม่ก็หาเจอ เพราะ resolve ใหม่ทุกครั้งที่ reconnect
+- เครื่อง Hub จริง (RPi/Linux): ตั้ง hostname เป็น `synapta-hub` → Avahi ตอบ `synapta-hub.local` เองในตัว · Windows ตอบเฉพาะ "ชื่อเครื่องตัวเอง.local" (เช่น `NINV2.local`) — zeroconf ฝั่ง Hub ประกาศ alias ได้แต่ Windows Firewall มักบล็อกคำถามจากเครื่องอื่น ใช้ชื่อเครื่องตรง ๆ ชัวร์กว่า
+- ทดสอบบนบอร์ดจริงแล้ว (2026-06-11): resolve `NINV2.local` → MQTT5 ต่อสำเร็จ
+- ถ้าโปรเจคมี component `espressif/mdns` library จะ resolve เอง + cache IP ลง NVS เป็นแผนสำรอง — แต่กับ PlatformIO header component มองไม่เห็นจาก lib_deps ให้พึ่งเส้นทาง lwip เป็นหลัก
 
 `platformio.ini`: `framework = espidf`, `lib_deps` ชี้ `https://github.com/Ninlapat5G/SynaptaNode-V0.git`
 

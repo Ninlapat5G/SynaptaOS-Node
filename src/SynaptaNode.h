@@ -60,6 +60,8 @@ private:
     TaskHandle_t               _loopTask = nullptr;
 
     void _init();
+    std::string _resolveBrokerHost();   // ".local" → IP ผ่าน mDNS (+cache NVS)
+    void _maybeReResolve();             // หลุดนาน → เช็คว่า broker ย้าย IP ไหม
     std::string _nodeId()        const;
     std::string _statusTopic()   const;
     std::string _manifestTopic() const;

@@ -6,9 +6,21 @@
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "esp_crt_bundle.h"
+#include "nvs.h"
 #include <cstring>
 
+// mDNS — มีเมื่อโปรเจคใส่ component espressif/mdns (idf_component.yml)
+// ไม่มีก็ compile ผ่าน แค่ใช้ชื่อ .local ไม่ได้ (ต้องใส่ IP ตรง ๆ แบบเดิม)
+#if __has_include("mdns.h")
+#include "mdns.h"
+#define SYN_HAS_MDNS 1
+#endif
+
 SynaptaNodeClass Synapta;
+
+// ต้องเก็บ string ไว้ให้ pointer ยังชี้ถึงได้ตลอด lifetime ของ client
+// (file-scope เพราะ _maybeReResolve ต้องแก้ s_uri/s_host ได้หลังบูต)
+static std::string s_uri, s_clientId, s_statusTopic, s_user, s_pass, s_host;
 
 // ── NVS init ──────────────────────────────────────────────────────────────────
 
@@ -33,6 +45,86 @@ static void wifiEventHandler(void*, esp_event_base_t base, int32_t id, void*) {
     }
     if (base == IP_EVENT   && id == IP_EVENT_STA_GOT_IP)
         xEventGroupSetBits(s_wifiEG, WIFI_CONNECTED_BIT);
+}
+
+// ── mDNS resolve — broker เป็นชื่อ "xxx.local" → ถามหา IP ปัจจุบันในวง LAN ──────
+// DHCP แจกเลขใหม่เมื่อไหร่ก็ไม่พัง เพราะถามด้วย "ชื่อ" ใหม่ทุกครั้งที่ต่อ
+
+static const char* NET_NS = "syn-net";
+
+static std::string _loadCachedBrokerIp() {
+    nvs_handle_t h;
+    if (nvs_open(NET_NS, NVS_READONLY, &h) != ESP_OK) return "";
+    char buf[16] = {};
+    size_t len = sizeof(buf);
+    esp_err_t err = nvs_get_str(h, "broker_ip", buf, &len);
+    nvs_close(h);
+    return err == ESP_OK ? std::string(buf) : "";
+}
+
+static void _saveCachedBrokerIp(const std::string& ip) {
+    nvs_handle_t h;
+    if (nvs_open(NET_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_str(h, "broker_ip", ip.c_str());
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+// คืน IP ของ host (ชื่อไม่รวม .local) — ว่าง = หาไม่เจอ
+static std::string _mdnsResolve(const std::string& hostname) {
+#ifdef SYN_HAS_MDNS
+    static bool inited = false;
+    if (!inited) {
+        if (mdns_init() != ESP_OK) return "";
+        inited = true;
+    }
+    esp_ip4_addr_t addr = {};
+    if (mdns_query_a(hostname.c_str(), 4000, &addr) != ESP_OK) return "";
+    char buf[16];
+    snprintf(buf, sizeof(buf), IPSTR, IP2STR(&addr));
+    return std::string(buf);
+#else
+    printf("[Synapta] WARN: broker เป็นชื่อ .local แต่โปรเจคไม่มี component mdns\n"
+           "          เพิ่ม idf_component.yml: dependencies: espressif/mdns\n");
+    return "";
+#endif
+}
+
+// แปลง broker ใน config → host ที่ใช้ต่อจริง (resolve .local + cache ลง NVS)
+std::string SynaptaNodeClass::_resolveBrokerHost() {
+    const std::string& host = _cfg.mqttBroker;
+    const std::string suffix = ".local";
+    if (host.size() <= suffix.size() ||
+        host.compare(host.size() - suffix.size(), suffix.size(), suffix) != 0) {
+        return host;   // เป็น IP/โดเมนปกติ — ใช้ตรง ๆ
+    }
+#ifdef SYN_HAS_MDNS
+    // ทางหลัก (มี component mdns): resolve เอง + จำ IP ลง NVS ไว้เป็นแผนสำรอง
+    std::string name = host.substr(0, host.size() - suffix.size());
+    std::string ip = _mdnsResolve(name);
+    if (!ip.empty()) {
+        printf("[Synapta] mDNS: %s → %s\n", host.c_str(), ip.c_str());
+        _saveCachedBrokerIp(ip);
+        return ip;
+    }
+    std::string cached = _loadCachedBrokerIp();
+    if (!cached.empty()) {
+        printf("[Synapta] mDNS หาไม่เจอ — ใช้ IP ล่าสุดที่จำไว้: %s\n", cached.c_str());
+        return cached;
+    }
+    printf("[Synapta] mDNS หาไม่เจอและไม่มี IP เก่า — ใช้ชื่อตรง ๆ (อาจต่อไม่ติด)\n");
+    return host;
+#elif defined(CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES)
+    // ไม่มี component แต่ lwip resolve .local ได้เอง — ส่งชื่อให้ esp-mqtt ตรง ๆ
+    // (ดีกว่าด้วยซ้ำ: ทุกครั้งที่ reconnect มันถามหา IP ใหม่เอง broker ย้ายเครื่องก็ตามเจอ)
+    printf("[Synapta] broker %s — ให้ lwip resolve ตอนเชื่อมต่อ (mDNS in-stack)\n", host.c_str());
+    return host;
+#else
+    printf("[Synapta] WARN: ใช้ชื่อ .local ต้องเปิด CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES=y\n"
+           "          ใน sdkconfig.defaults (หรือเพิ่ม component espressif/mdns)\n");
+    std::string cached = _loadCachedBrokerIp();
+    return cached.empty() ? host : cached;
+#endif
 }
 
 // ── V1 Fluent config ──────────────────────────────────────────────────────────
@@ -126,14 +218,13 @@ void SynaptaNodeClass::_init() {
     xEventGroupWaitBits(s_wifiEG, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
     printf("[Synapta] WiFi connected\n");
 
-    // MQTT
+    // MQTT — broker เป็นชื่อ .local ให้ถาม mDNS หา IP ปัจจุบันก่อน (รองรับ DHCP)
+    s_host = _resolveBrokerHost();
     std::string uri = (_cfg.mqttTLS ? "mqtts://" : "mqtt://")
-                    + _cfg.mqttBroker + ":" + std::to_string(_cfg.mqttPort);
+                    + s_host + ":" + std::to_string(_cfg.mqttPort);
     std::string clientId    = "synapta-" + _macSuffix();
     std::string statusTopic = _statusTopic();
 
-    // ต้องเก็บ string ไว้ให้ pointer ยังชี้ถึงได้ตลอด lifetime ของ client
-    static std::string s_uri, s_clientId, s_statusTopic, s_user, s_pass;
     s_uri         = uri;
     s_clientId    = clientId;
     s_statusTopic = statusTopic;
@@ -171,6 +262,7 @@ void SynaptaNodeClass::_init() {
     // Background task — รัน message dispatch + device loop โดยไม่ต้องมี loop() ใน user code
     xTaskCreate([](void* arg) {
         auto* self = static_cast<SynaptaNodeClass*>(arg);
+        uint32_t downTicks = 0;   // นับเวลาที่หลุดต่อเนื่อง (รอบละ ~10ms)
         while (true) {
             std::vector<_SynaptaMsg> inbox;
             xSemaphoreTake(self->_mutex, portMAX_DELAY);
@@ -178,6 +270,14 @@ void SynaptaNodeClass::_init() {
             xSemaphoreGive(self->_mutex);
             for (auto& msg : inbox) self->_dispatch(msg);
             for (auto* d : self->_devices) d->_loop();
+
+            // หลุดนานเกิน ~30 วิ → broker อาจย้าย IP (DHCP) — ถาม mDNS ใหม่
+            if (self->_connected) {
+                downTicks = 0;
+            } else if (++downTicks >= 3000) {
+                downTicks = 0;
+                self->_maybeReResolve();
+            }
             vTaskDelay(pdMS_TO_TICKS(10));
         }
     }, "synapta_main", 8192, this, 5, &_loopTask);
@@ -320,6 +420,24 @@ void SynaptaNodeClass::_publishManifest() {
     // retain + 1 ชั่วโมง — manifest เก่าหายเองถ้า node ไม่ reconnect
     bool ok = _publish(topic.c_str(), json.c_str(), true, 1, 3600);
     printf("[Synapta] Manifest → %s %s\n", topic.c_str(), ok ? "OK" : "FAILED");
+}
+
+// broker ชื่อ .local อาจย้าย IP (DHCP แจกใหม่) — ถามซ้ำ ถ้าได้เลขใหม่ให้ย้ายตาม
+void SynaptaNodeClass::_maybeReResolve() {
+    const std::string& host = _cfg.mqttBroker;
+    const std::string suffix = ".local";
+    if (host.size() <= suffix.size() ||
+        host.compare(host.size() - suffix.size(), suffix.size(), suffix) != 0) return;
+
+    std::string ip = _mdnsResolve(host.substr(0, host.size() - suffix.size()));
+    if (ip.empty() || ip == s_host) return;
+
+    printf("[Synapta] broker ย้าย IP → %s — เชื่อมใหม่\n", ip.c_str());
+    s_host = ip;
+    _saveCachedBrokerIp(ip);
+    s_uri = (_cfg.mqttTLS ? "mqtts://" : "mqtt://") + s_host + ":" + std::to_string(_cfg.mqttPort);
+    esp_mqtt_client_set_uri(_client, s_uri.c_str());
+    esp_mqtt_client_reconnect(_client);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
