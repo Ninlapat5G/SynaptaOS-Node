@@ -276,21 +276,16 @@ bool SynaptaNodeClass::_publish(const char* topic, const char* payload,
     if (_pubMutex) xSemaphoreTake(_pubMutex, portMAX_DELAY);
 
 #ifdef CONFIG_MQTT_PROTOCOL_5
-    if (expirySeconds > 0) {
-        esp_mqtt5_publish_property_config_t prop = {};
-        prop.message_expiry_interval = expirySeconds;
-        esp_mqtt5_client_set_publish_property(_client, &prop);
-    }
+    // ต้องเป็น static — esp-mqtt เก็บ "pointer" ของ struct นี้ไว้ ไม่ได้ก็อปค่า
+    // ถ้าใช้ตัวแปร stack ชั่วคราว พอออกจาก scope library จะอ่านหน่วยความจำขยะ
+    // → publish ครั้งถัดไปแครช (LoadProhibited ใน mqtt5_msg_publish)
+    static esp_mqtt5_publish_property_config_t s_pubProp;
+    s_pubProp = {};
+    s_pubProp.message_expiry_interval = expirySeconds;   // 0 = ไม่หมดอายุ
+    esp_mqtt5_client_set_publish_property(_client, &s_pubProp);
 #endif
 
     int ret = esp_mqtt_client_publish(_client, topic, payload, 0, qos, retain ? 1 : 0);
-
-#ifdef CONFIG_MQTT_PROTOCOL_5
-    if (expirySeconds > 0) {
-        esp_mqtt5_publish_property_config_t reset = {};
-        esp_mqtt5_client_set_publish_property(_client, &reset);
-    }
-#endif
 
     if (_pubMutex) xSemaphoreGive(_pubMutex);
     return ret >= 0;
