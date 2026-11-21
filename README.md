@@ -168,4 +168,4 @@ SynaptaSensor  temp  ("bedroom/temp");    // publish only
 
 ## License
 
-LGPL v2.1 — ใช้ใน sketch ได้โดยไม่ต้อง open source sketch ของคุณ
+Copyright (c) 2026 Ninlapat5G. All Rights Reserved. เปิดให้ดูโค้ดเท่านั้น ไม่ใช่ open source ห้ามนำไปใช้ ดัดแปลง หรือแจกจ่ายต่อโดยไม่ได้รับอนุญาตเป็นลายลักษณ์อักษร ดู [LICENSE](LICENSE)
